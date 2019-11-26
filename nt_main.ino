@@ -1,6 +1,6 @@
 /**
  * DHT21 with http server and OLED 0.96
- * v 0.6
+ * v 0.7
  */
 
 #include "DHT.h"
@@ -8,43 +8,62 @@
 #include "WiFiClient.h"
 #include "ESP8266WebServer.h"
 #include <time.h>
-#include <Wire.h>    // библиотека Wire для коммуникации по I2C. нужна только для Arduino 1.6.5 и старее
-#include "SSD1306.h" // включает в себя также «SSD1306Wire.h»`
+#include <Wire.h>
+#include "SSD1306.h"       // include «SSD1306Wire.h»`
+#include <RBD_Timer.h>
+#include <RBD_Button.h>
+
 
 #define DHTTYPE DHT21
 #define DHTCOUNT 3
 
-#define DHTPIN_1 0     // D3
-#define DHTPIN_2 14    // D5
-#define DHTPIN_3 12    // D6
-
 #define TIME_MSG_LEN  11   // time sync to PC is HEADER and unix time_t as ten ascii digits
 #define TIME_HEADER  255   // Header tag for serial time sync message
+
+#define D0   16
+#define D1   5 
+#define D2   4 
+#define D3   0
+#define D4   2 
+#define D5   14 
+#define D6   12 
+#define D7   13 
+#define D8   15 
+#define D9   3    // RX0 (Serial console)
+#define D10  1    // TX0 (Serial console)
 
 const char* ssid = "SSID";
 const char* password = "PASSWORD32";
 const char* token = "TOKEN32";
 
-//IPAddress ip(192, 168, 11, 11);        //статический IP
-IPAddress ip(192, 168, 11, 12);
+IPAddress ip(192, 168, 11, 11);        //static IP
+//IPAddress ip(192, 168, 11, 12);
 IPAddress gateway(192, 168, 11, 1);
 IPAddress subnet(255, 255, 255, 0);
 
 ESP8266WebServer server(80);
 
-DHT dht1(DHTPIN_1, DHTTYPE);
-DHT dht2(DHTPIN_2, DHTTYPE);
-DHT dht3(DHTPIN_3, DHTTYPE);
+DHT dht1(D3, DHTTYPE);
+DHT dht2(D5, DHTTYPE);
+DHT dht3(D6, DHTTYPE);
 
 SSD1306 display(0x3c, D1, D2);
 // SH1106 display(0x3c, D3, D5);
+
+RBD::Timer timer1;
+//RBD::Timer timer2;
+
+RBD::Button button1(D7);
+
 
 float cacheTemp [DHTCOUNT] = {};
 float cacheHumi [DHTCOUNT] = {};
 float cacheHeat [DHTCOUNT] = {};
 time_t timeForCache [DHTCOUNT] = {};
 time_t timeoutCacheSec = 15;
-time_t timeoutMaxCacheSec = 5 * 60;
+time_t timeoutMaxCacheSec = 300; // 5 * 60
+
+int displayStatus = 0;
 
 
 void setup() {
@@ -67,6 +86,7 @@ void setup() {
   WiFi.config(ip, gateway, subnet);
   
   // Whait
+  // TODO: Rewrite for main loop...
   while (WiFi.status() != WL_CONNECTED) {
     Serial.print(".");
     display.clear();
@@ -85,9 +105,17 @@ void setup() {
   Serial.println(ssid);
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
+  
   server.on("/", handleRoot);
   server.begin();
   Serial.println("HTTP server started");
+
+  timer1.setTimeout(1000);
+  timer1.restart();
+//  timer2.setTimeout(100);
+//  timer2.restart();
+
+  button1.setDebounceTimeout(50);
 }
 
 
@@ -203,14 +231,9 @@ String displayHumidity(float h) {
 }
 
 
-void loop() {
-  server.handleClient();
-
-  getDhtData(dht1, 0);
-  getDhtData(dht2, 1);
-  getDhtData(dht3, 2);
-  
+void updateDisplay() {
   display.clear();
+
   //display.drawString(0, 0, "-- : --");
   
   display.drawString(0, 16, "d1:");
@@ -226,6 +249,33 @@ void loop() {
   display.drawString(88, 48, displayHumidity(cacheHumi[2]));
   
   display.display();
+}
+
+
+void loop() {
   
-  delay(1000);
+  if(timer1.onRestart()) {
+    server.handleClient();
+    
+    getDhtData(dht1, 0);
+    getDhtData(dht2, 1);
+    getDhtData(dht3, 2);
+    updateDisplay();
+  }
+
+  if(button1.onPressed()) {
+    Serial.println("B7");
+    displayStatus++;
+    if (displayStatus > 2) { displayStatus = 0; }
+    if (displayStatus == 0) {
+      display.displayOn();
+      display.setContrast(100);
+    } else if (displayStatus == 1) {
+      display.displayOn();
+      display.setContrast(20, 80);
+    } else {
+      display.setContrast(10, 5, 0);
+      display.displayOff();
+    }
+  }
 }
