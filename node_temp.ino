@@ -1,17 +1,29 @@
 /**
  * DHT21 with http server and OLED 0.96
- * v 0.7
+ * v 0.9
  */
 
-#include "DHT.h"
-#include "ESP8266WiFi.h"
-#include "WiFiClient.h"
-#include "ESP8266WebServer.h"
+#include <DHT.h>
+#include <ESP8266WiFi.h>
+#include <WiFiClient.h>
+#include <ESP8266WebServer.h>
 #include <time.h>
 #include <Wire.h>
-#include "SSD1306.h"       // include «SSD1306Wire.h»`
+#include <SSD1306.h>       // include <SSD1306Wire.h>
 #include <RBD_Timer.h>
 #include <RBD_Button.h>
+
+// Uncommint for debug
+// #define DEBUG
+
+#define DEBUG_PRINTER Serial
+#ifdef DEBUG
+  #define DEBUG_PRINT(...) { DEBUG_PRINTER.print(__VA_ARGS__); }
+  #define DEBUG_PRINTLN(...) { DEBUG_PRINTER.println(__VA_ARGS__); }
+#else
+  #define DEBUG_PRINT(...) {}
+  #define DEBUG_PRINTLN(...) {}
+#endif
 
 
 #define DHTTYPE DHT21
@@ -21,23 +33,23 @@
 #define TIME_HEADER  255   // Header tag for serial time sync message
 
 #define D0   16
-#define D1   5 
-#define D2   4 
-#define D3   0
+#define D1   5    // oled
+#define D2   4    // oled
+#define D3   0    // dht
 #define D4   2 
-#define D5   14 
-#define D6   12 
-#define D7   13 
-#define D8   15 
-#define D9   3    // RX0 (Serial console)
-#define D10  1    // TX0 (Serial console)
+#define D5   14   // dht
+#define D6   12   // dht
+#define D7   13   // button
+#define D8   15   // button
+#define D9   3    // - RX0 (Serial console)
+#define D10  1    // - TX0 (Serial console)
 
 const char* ssid = "SSID";
 const char* password = "PASSWORD32";
 const char* token = "TOKEN32";
 
-IPAddress ip(192, 168, 11, 11);        //static IP
-//IPAddress ip(192, 168, 11, 12);
+//IPAddress ip(192, 168, 11, 11);        //static IP
+IPAddress ip(192, 168, 11, 12);
 IPAddress gateway(192, 168, 11, 1);
 IPAddress subnet(255, 255, 255, 0);
 
@@ -48,12 +60,13 @@ DHT dht2(D5, DHTTYPE);
 DHT dht3(D6, DHTTYPE);
 
 SSD1306 display(0x3c, D1, D2);
-// SH1106 display(0x3c, D3, D5);
+// SH1106 display(0x3c, D1, D2);
 
 RBD::Timer timer1;
 //RBD::Timer timer2;
 
 RBD::Button button1(D7);
+RBD::Button button2(D8);
 
 
 float cacheTemp [DHTCOUNT] = {};
@@ -64,15 +77,16 @@ time_t timeoutCacheSec = 15;
 time_t timeoutMaxCacheSec = 300; // 5 * 60
 
 int displayStatus = 0;
+bool initializedWifi = false;
+byte flicker = 0;
 
 
 void setup() {
-  int tempRel = 0;
   
   Serial.begin(9600);
   Serial.setTimeout(2000);
   // Wait for serial to initialize.
-  while(!Serial) { delay(50); }
+  while (!Serial) { delay(50); }
   
   display.init();
   display.flipScreenVertically();
@@ -84,31 +98,6 @@ void setup() {
   
   WiFi.begin(ssid, password);
   WiFi.config(ip, gateway, subnet);
-  
-  // Whait
-  // TODO: Rewrite for main loop...
-  while (WiFi.status() != WL_CONNECTED) {
-    Serial.print(".");
-    display.clear();
-    display.drawString(0, 0, "Wait WiFi ...");
-    if (tempRel > 1){
-      tempRel = 0;
-      display.drawString(112, 0, "*");
-    }
-    tempRel++;
-    display.display();
-    delay(1000);
-  }
-  
-  Serial.println("");
-  Serial.print("Connected to ");
-  Serial.println(ssid);
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
-  
-  server.on("/", handleRoot);
-  server.begin();
-  Serial.println("HTTP server started");
 
   timer1.setTimeout(1000);
   timer1.restart();
@@ -116,6 +105,59 @@ void setup() {
 //  timer2.restart();
 
   button1.setDebounceTimeout(50);
+  button2.setDebounceTimeout(50);
+
+  dht1.begin(60);
+  dht2.begin(70);
+  dht3.begin(80);
+}
+
+
+void configureWifi() {
+  // Call one per second.
+  
+  // If all good.
+  if( WiFi.status() == WL_CONNECTED and initializedWifi == true) {
+    display.drawString(0, 0, "wifi ok");
+    return;
+  }
+
+  // If connected.
+  if( WiFi.status() == WL_CONNECTED and initializedWifi != true) {
+    initializedWifi = true;
+    
+    Serial.println("");
+    Serial.print("Connected to ");
+    Serial.println(ssid);
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+    
+    server.on("/", handleRoot);
+    server.begin();
+    
+    Serial.println("HTTP server started");
+    return;
+  }
+
+  // If lost connect.
+  if( WiFi.status() != WL_CONNECTED and initializedWifi == true) {
+    initializedWifi = false;
+    // Wait in loop.
+    return;
+  }
+  
+  // Wait connect.
+  if( WiFi.status() != WL_CONNECTED and initializedWifi != true) {
+    Serial.print(".");
+    //display.drawString(0, 0, "wifi");
+    if (flicker % 2 == 0){
+      display.drawString(0, 0, "wifi lost");
+    }
+    return;
+  }
+
+  // All else (never been).
+  return;
 }
 
 
@@ -137,11 +179,11 @@ void getDhtData(DHT &dht, int i) {
     if (isnan(cacheTemp[i]) || isnan(cacheHumi[i])) {
       timeForCache[i] = 0;
     }
-    //Serial.println("DEB: Update now = " + String(nowTime));
+    DEBUG_PRINTLN("DEB: Update now = " + String(nowTime));
   } else {
-    //Serial.println("DEB: NOT update (cache) now = " + String(nowTime));
+    DEBUG_PRINTLN("DEB: NOT update (cache) now = " + String(nowTime));
   }
-  //Serial.println("DEB: " + String(timeForCache[i]) + " " + String(cacheHumi[i]));
+  DEBUG_PRINTLN("DEB: " + String(i) + "  " + String(cacheTemp[i]) + "  " + String(cacheHumi[i]));
 }
 
 
@@ -219,6 +261,7 @@ String displayTemperature(float t) {
   return res + String(abs(t)) + "*C";
 }
 
+
 String displayHumidity(float h) {
   String res = "";
   if (isnan(h)) {return "err";}
@@ -232,9 +275,11 @@ String displayHumidity(float h) {
 
 
 void updateDisplay() {
-  display.clear();
-
-  //display.drawString(0, 0, "-- : --");
+  if (flicker % 2 == 0){
+    display.drawString(88, 0, "00:00");
+  } else {
+    display.drawString(88, 0, "00 00");
+  }
   
   display.drawString(0, 16, "d1:");
   display.drawString(32, 16, displayTemperature(cacheTemp[0]));
@@ -248,19 +293,31 @@ void updateDisplay() {
   display.drawString(32, 48, displayTemperature(cacheTemp[2]));
   display.drawString(88, 48, displayHumidity(cacheHumi[2]));
   
-  display.display();
 }
 
 
 void loop() {
-  
-  if(timer1.onRestart()) {
+  if (initializedWifi) {
     server.handleClient();
+  }
     
+  if (timer1.onRestart()) {
     getDhtData(dht1, 0);
     getDhtData(dht2, 1);
     getDhtData(dht3, 2);
+    
+    display.clear();
+    
+    configureWifi();
     updateDisplay();
+    
+    display.display();
+
+    if (flicker >= 255){
+      flicker = 0;
+    } else {
+      flicker++; 
+    }
   }
 
   if(button1.onPressed()) {
